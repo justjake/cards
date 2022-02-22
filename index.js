@@ -15,8 +15,8 @@ const katex = require("katex");
 const Prism = require("prismjs");
 const loadLanguages = require("prismjs/components/");
 const mimeTypes = require("mime-types");
+const { CMS, NotionClient, richTextAsPlainText } = require("@jitl/notion-api");
 
-/** @typedef {import('@notionhq/client').Client } NotionClient */
 /** @typedef {import('@notionhq/client/build/src/api-endpoints').GetBlockResponse } GetBlockResponse */
 /** @typedef {Extract<GetBlockResponse, { type: string }>} Block */
 /** @typedef {Extract<Block, {type: "paragraph"}>["paragraph"]["text"][number] } RichText */
@@ -100,6 +100,39 @@ const settings = new (class Settings {
     };
   }
 })();
+
+const cms = new CMS({
+  database_id: settings.notionDatabaseId,
+  notion: new NotionClient({ auth: settings.notionSecret }),
+  title: {
+    type: "property",
+    property: {
+      name: "Name",
+      propertyType: "title",
+    },
+  },
+  slug: {
+    type: "derived",
+    derive(page) {
+      const id = page.id;
+      const /** @type {any} */ properties = page.properties;
+      return (
+        (properties.Filename
+          ? concatenateText(properties.Filename.rich_text)
+          : "") || `${id.replace(/-/g, "").slice(0, 8)}.html`
+      );
+    },
+  },
+  customProperties: {},
+  visible: true,
+  assets: {
+    directory: settings.outputDir,
+    downloadExternalAssets: true,
+  },
+  cache: {
+    directory: settings.output("cache"),
+  },
+});
 
 // We preload all blocks in every page then transform the block data model so
 // that each block has a children array containing its children.
@@ -778,54 +811,44 @@ const main = async function main() {
     await fsPromises.mkdir(settings.outputDir, { recursive: true });
   }
 
-  // Load all the pages
-  await forEachRow(
-    {
-      token: settings.notionSecret,
-      database: settings.notionDatabaseId,
-    },
-    async (page, notion) => {
-      const { id, icon, properties } = page;
+  for await (const page of cms.query()) {
+    const notion = cms.config.notion;
+    const { id, icon, properties } = page.content;
 
-      const title = concatenateText(properties.Name.title);
-      const children = await getChildren(notion, id);
-      const favicon = await saveFavicon(id, icon);
+    const filename = page.frontmatter.slug;
+    const title = richTextAsPlainText(page.frontmatter.title);
+    const children = page.content.children;
+    const favicon = await saveFavicon(id, icon);
 
-      // headingIcon is generated here so it can have the
-      // emoji character as its alt text.
-      //
-      // Probably better to just send the emoji down.
-      const headingIcon = icon
-        ? `<img width="32" height="32" alt="${
-            icon.type === "emoji" ? icon.emoji : ""
-          }" src="${settings.url(favicon)}" />`
-        : null;
+    // headingIcon is generated here so it can have the
+    // emoji character as its alt text.
+    //
+    // Probably better to just send the emoji down.
+    const headingIcon = icon
+      ? `<img width="32" height="32" alt="${
+          icon.type === "emoji" ? icon.emoji : ""
+        }" src="${settings.url(favicon)}" />`
+      : null;
 
-      const filename =
-        (properties.Filename
-          ? concatenateText(properties.Filename.rich_text)
-          : "") || `${id.replace(/-/g, "").slice(0, 8)}.html`;
+    const blocks = groupAdjacentBlocksRecursively(
+      groupAdjacentBlocksRecursively(
+        children,
+        "numbered_list_item",
+        "numbered_list"
+      ),
+      "bulleted_list_item",
+      "bulleted_list"
+    );
 
-      const blocks = groupAdjacentBlocksRecursively(
-        groupAdjacentBlocksRecursively(
-          children,
-          "numbered_list_item",
-          "numbered_list"
-        ),
-        "bulleted_list_item",
-        "bulleted_list"
-      );
-
-      pages.push({
-        id,
-        headingIcon,
-        favicon,
-        title,
-        blocks,
-        filename,
-      });
-    }
-  );
+    pages.push({
+      id,
+      headingIcon,
+      favicon,
+      title,
+      blocks,
+      filename,
+    });
+  }
 
   await Promise.all(
     pages.map(async (page) => {

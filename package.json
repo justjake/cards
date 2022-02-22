@@ -8,6 +8,7 @@
     "watch": "concurrently 'npm:watch:*'"
   },
   "dependencies": {
+    "@jitl/notion-api": "^0.0.1",
     "@notionhq/client": "^0.4.12",
     "dotenv": "^14.1.0",
     "emoji-datasource-apple": "^7.0.2",
